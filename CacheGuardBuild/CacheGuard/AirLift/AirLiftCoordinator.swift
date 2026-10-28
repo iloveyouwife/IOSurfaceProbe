@@ -10,24 +10,33 @@ final class AirLiftCoordinator: ObservableObject {
     @Published private(set) var pairing = false
     @Published private(set) var checkingContainer = false
     @Published private(set) var checkingCanary = false
+    @Published private(set) var checkingCacheTraversal = false
     @Published private(set) var pin: String?
     @Published private(set) var stage = "等待配对"
     @Published private(set) var diagnostic = "尚未验证设备服务连接"
     @Published private(set) var canaryDiagnostic = "尚未验证 AirLift 单文件读取通道"
+    @Published private(set) var cacheTraversalDiagnostic = "尚未检测其他 App 的缓存目录权限"
     @Published private(set) var hasRecord = PairingRecordStore.activePath != nil
+    @Published private(set) var inspectedContainerPath: String?
 
     private let audio = PairingBackgroundAudio()
     private var advertiser: NetService?
     private let identityKey = "cacheguard.airlift.hostAltIRK"
 
-    private init() {}
+    private init() {
+        if hasRecord { stage = "已恢复本机配对记录；开启 LocalDevVPN 后可直接尝试连接，无需重输 PIN。" }
+    }
 
     func refresh() {
         hasRecord = PairingRecordStore.activePath != nil
+        if hasRecord && !pairing {
+            stage = "已保存配对记录：无需重复 PIN。打开 LocalDevVPN 直接进行容器查询；连接是否有效仍以实际测试为准。"
+        }
     }
 
     func importPairingFile(_ url: URL) {
-        guard !pairing, !checkingContainer, !checkingCanary else { return }
+        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal else { return }
+        inspectedContainerPath = nil
         do {
             _ = try PairingRecordStore.importRecord(from: url)
             stage = "配对文件已导入；尚未验证跨沙盒权限"
@@ -39,7 +48,8 @@ final class AirLiftCoordinator: ObservableObject {
     }
 
     func forgetPairing() {
-        guard !pairing, !checkingContainer, !checkingCanary else { return }
+        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal else { return }
+        inspectedContainerPath = nil
         do {
             try PairingRecordStore.remove()
             stage = "本地配对记录已移除"
@@ -51,7 +61,7 @@ final class AirLiftCoordinator: ObservableObject {
     }
 
     func startOnDevicePairing() {
-        guard !pairing, !checkingContainer, !checkingCanary else { return }
+        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal else { return }
         guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 else {
             stage = "系统设置内配对要求 iOS 27 或更高版本；可导入电脑生成的配对文件。"
             return
@@ -158,7 +168,9 @@ final class AirLiftCoordinator: ObservableObject {
     }
 
     func inspectContainer(bundleID: String) {
-        guard !checkingContainer, !checkingCanary, !pairing else { return }
+        guard !checkingContainer, !checkingCanary, !checkingCacheTraversal, !pairing else { return }
+        inspectedContainerPath = nil
+        cacheTraversalDiagnostic = "尚未检测其他 App 的缓存目录权限"
         guard let record = PairingRecordStore.activePath else {
             diagnostic = "请先完成配对或导入配对文件。"
             return
@@ -193,6 +205,7 @@ final class AirLiftCoordinator: ObservableObject {
             DispatchQueue.main.async {
                 self.checkingContainer = false
                 if rc == 0, let path, !path.isEmpty {
+                    self.inspectedContainerPath = path
                     self.diagnostic = "设备服务返回了 \(candidate) 的容器路径：\(path)。这只验证查询，未证明缓存可枚举或可删除。"
                 } else {
                     self.diagnostic = "容器查询未成功：\(message)。请检查 VPN 地址、配对记录以及 App 是否已安装。"
@@ -205,7 +218,7 @@ final class AirLiftCoordinator: ObservableObject {
     /// is opened and no system file is modified. Result verifies transport,
     /// not third-party cache or directory access.
     func checkReadTransportWithOwnCanary() {
-        guard !pairing, !checkingContainer, !checkingCanary else { return }
+        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal else { return }
         guard let pairingPath = PairingRecordStore.activePath else {
             canaryDiagnostic = "请先完成配对。"
             return
@@ -253,6 +266,33 @@ final class AirLiftCoordinator: ObservableObject {
                 self.canaryDiagnostic = verified
                     ? "测试通过：AirLift 返回的内容与本 App 临时文件完全一致（\(marker.count) 字节）。不代表微信缓存已可读或可删除。"
                     : "测试未通过：\(String(errorText.prefix(250)))。请检查配对文件与 VPN；这不等于跨 App 访问一定失败。"
+            }
+        }
+    }
+
+    /// Checks whether the 3105 direct-POSIX cleaner is even possible with the
+    /// active process sandbox. No deletion, writes or file content reads.
+    func inspectCacheDirectoryAccess() {
+        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
+              let container = inspectedContainerPath,
+              CacheTraversalProbe.validateAppRoot(container) else {
+            cacheTraversalDiagnostic = "先成功查询目标 App 的数据容器。"
+            return
+        }
+        checkingCacheTraversal = true
+        cacheTraversalDiagnostic = "只读检测 Library/Caches 和 tmp 的目录遍历权限…"
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let outcomes = CacheTraversalProbe.inspect(containerPath: container)
+            let summary = outcomes.map(\.summary).joined(separator: "\n")
+            let atLeastOneAllowed = outcomes.contains { $0.count != nil }
+            DispatchQueue.main.async {
+                self.checkingCacheTraversal = false
+                self.cacheTraversalDiagnostic = summary + "\n" + (
+                    atLeastOneAllowed
+                    ? "存在可读取的缓存目录；后续才可测试 3105 式受控扫描，当前不会删除。"
+                    : "当前进程无法直接遍历这些目录；需要研究 AirLift 远程 AFC/HouseArrest 后端，不能直接复制 unlinkat 删除。"
+                )
             }
         }
     }

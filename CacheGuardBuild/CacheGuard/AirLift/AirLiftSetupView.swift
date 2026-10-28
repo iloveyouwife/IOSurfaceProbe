@@ -5,6 +5,7 @@ struct AirLiftSetupView: View {
     @StateObject private var bridge = AirLiftCoordinator.shared
     @State private var importing = false
     @State private var forgetConfirmation = false
+    @State private var repeatPairingConfirmation = false
     @State private var targetHost = AirLiftNetwork.targetHost
     @State private var networkError: String?
     @State private var bundleIdentifier = "com.tencent.xin"
@@ -19,6 +20,11 @@ struct AirLiftSetupView: View {
                 Text(bridge.stage)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                if bridge.hasRecord {
+                    Label("下次启动可以直接连接，不需要重新配对", systemImage: "checkmark.seal.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.green)
+                }
                 if let pin = bridge.pin {
                     HStack {
                         Text("系统设置中输入")
@@ -31,20 +37,27 @@ struct AirLiftSetupView: View {
             }
 
             Section("第一步 · 本机配对（iOS 27）") {
-                Text("1. 开启“设置 → 隐私与安全性 → 开发者模式”。")
-                Text("2. 点击下方按钮，首次弹窗请允许本地网络权限。")
-                Text("3. 不要结束清存；切到开发者模式页面，找到“与 CacheGuard 配对”，按提示输入 PIN。")
-                Text("4. 返回清存，确认出现“本机配对成功”。")
-                Button {
-                    bridge.startOnDevicePairing()
-                } label: {
-                    if bridge.pairing { ProgressView().padding(.trailing, 5) }
-                    Text(bridge.pairing ? "等待系统设置确认…" : "启动本机配对")
+                if bridge.hasRecord && !bridge.pairing {
+                    Label("已配对：跳过本步骤，直接连接 LocalDevVPN", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Button("仅在连接失效时重新配对") { repeatPairingConfirmation = true }
+                        .disabled(bridge.checkingContainer || bridge.checkingCanary || bridge.checkingCacheTraversal)
+                } else {
+                    Text("1. 开启“设置 → 隐私与安全性 → 开发者模式”。")
+                    Text("2. 首次点击配对按钮，并允许“本地网络”权限。")
+                    Text("3. 切到开发者模式，选择“与 CacheGuard 配对”，输入 PIN。")
+                    Text("4. 返回本 App，等到出现“本机配对成功”。")
+                    Button {
+                        bridge.startOnDevicePairing()
+                    } label: {
+                        if bridge.pairing { ProgressView().padding(.trailing, 5) }
+                        Text(bridge.pairing ? "等待系统设置确认…" : "首次本机配对")
+                    }
+                    .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.checkingCacheTraversal)
+                    Text("配对服务没有原生取消接口；卡住时可以关闭并重开 App。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary)
-                Text("原生配对接口暂不支持安全取消；若长时间无响应，请关闭并重开 App。后台静音音频仅在等待配对时启用。")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
             }
 
             Section("备选 · 导入配对文件") {
@@ -57,6 +70,9 @@ struct AirLiftSetupView: View {
                         .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary)
                 }
                 Text("配对记录包含设备信任凭据，仅保存在 App 私有目录、排除系统备份；请勿发送到聊天、网盘或公开仓库。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("会额外保存一份仅本设备可解锁的钥匙串备份。更换 Bundle ID、签名团队或清除系统配对关系后，可能仍需手动重新配对。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -114,6 +130,21 @@ struct AirLiftSetupView: View {
                     .textSelection(.enabled)
             }
 
+            Section("第五步 · 3105 清理方式兼容性") {
+                Text("只检测刚才查询到的 App 的 Library/Caches 和 tmp 两个目录能否通过本进程直接遍历。仅统计顶层项目数量，不读取内容，也不删除任何文件。")
+                    .font(.footnote)
+                Button {
+                    bridge.inspectCacheDirectoryAccess()
+                } label: {
+                    if bridge.checkingCacheTraversal { ProgressView().padding(.trailing, 5) }
+                    Text(bridge.checkingCacheTraversal ? "正在检测目录权限…" : "检测 3105 式缓存目录权限")
+                }
+                .disabled(bridge.inspectedContainerPath == nil || bridge.checkingCacheTraversal || bridge.checkingCanary || bridge.checkingContainer || bridge.pairing)
+                Text(bridge.cacheTraversalDiagnostic)
+                    .font(.footnote)
+                    .textSelection(.enabled)
+            }
+
             Section("缓存清理状态") {
                 Label("跨 App 自动清理尚未启用", systemImage: "exclamationmark.shield")
                     .foregroundStyle(.orange)
@@ -136,6 +167,11 @@ struct AirLiftSetupView: View {
             Button("移除记录", role: .destructive) { bridge.forgetPairing() }
         } message: {
             Text("这不会取消系统设置内已有的配对关系，只会删除本 App 保存的信任记录。")
+        }
+        .confirmationDialog("确认重新配对？", isPresented: $repeatPairingConfirmation) {
+            Button("重新配对") { bridge.startOnDevicePairing() }
+        } message: {
+            Text("仅当现有记录无法再连接时才需要。正常升级、重新打开 App 都应直接使用已保存的记录。")
         }
     }
 

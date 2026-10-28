@@ -23,10 +23,19 @@ enum PairingRecordStore {
     }
 
     static var activePath: String? {
+        if hasUsableFile { return url.path }
+        if let saved = DevicePairingVault.read(),
+           (try? validate(saved)) != nil,
+           (try? save(saved, persistToKeychain: false)) != nil {
+            return url.path
+        }
+        return nil
+    }
+
+    private static var hasUsableFile: Bool {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = attrs[.size] as? NSNumber,
-              size.intValue >= 64 else { return nil }
-        return url.path
+              let size = attrs[.size] as? NSNumber else { return false }
+        return size.intValue >= 64
     }
 
     @discardableResult
@@ -53,6 +62,7 @@ enum PairingRecordStore {
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
+        DevicePairingVault.remove()
     }
 
     private static func validate(_ data: Data) throws {
@@ -65,7 +75,7 @@ enum PairingRecordStore {
         throw StoreError.invalidRecord
     }
 
-    private static func save(_ data: Data) throws {
+    private static func save(_ data: Data, persistToKeychain: Bool = true) throws {
         let folder = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         var folderValues = URLResourceValues()
@@ -81,5 +91,6 @@ enum PairingRecordStore {
         fileValues.isExcludedFromBackup = true
         var mutableFile = url
         try mutableFile.setResourceValues(fileValues)
+        if persistToKeychain { _ = DevicePairingVault.save(data) }
     }
 }
