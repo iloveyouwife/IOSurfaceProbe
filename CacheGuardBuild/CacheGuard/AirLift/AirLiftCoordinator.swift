@@ -13,15 +13,18 @@ final class AirLiftCoordinator: ObservableObject {
     @Published private(set) var checkingCacheTraversal = false
     @Published private(set) var scanningForeignCache = false
     @Published private(set) var deletingForeignCache = false
+    @Published private(set) var checkingRemoteAfc = false
     @Published private(set) var pin: String?
     @Published private(set) var stage = "等待配对"
     @Published private(set) var diagnostic = "尚未验证设备服务连接"
     @Published private(set) var canaryDiagnostic = "尚未验证 AirLift 单文件读取通道"
     @Published private(set) var cacheTraversalDiagnostic = "尚未检测其他 App 的缓存目录权限"
     @Published private(set) var foreignCacheDiagnostic = "尚未扫描目标 App 的缓存"
+    @Published private(set) var remoteAfcDiagnostic = "尚未检查 HouseArrest 远程 AFC 的容器访问权限"
     @Published private(set) var foreignCacheScan: ForeignCacheCleaner.Snapshot?
     @Published private(set) var hasRecord = PairingRecordStore.activePath != nil
     @Published private(set) var inspectedContainerPath: String?
+    @Published private(set) var inspectedBundleIdentifier: String?
 
     private let audio = PairingBackgroundAudio()
     private var advertiser: NetService?
@@ -42,6 +45,7 @@ final class AirLiftCoordinator: ObservableObject {
         guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
               !scanningForeignCache, !deletingForeignCache else { return }
         inspectedContainerPath = nil
+        inspectedBundleIdentifier = nil
         foreignCacheScan = nil
         do {
             _ = try PairingRecordStore.importRecord(from: url)
@@ -57,6 +61,7 @@ final class AirLiftCoordinator: ObservableObject {
         guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
               !scanningForeignCache, !deletingForeignCache else { return }
         inspectedContainerPath = nil
+        inspectedBundleIdentifier = nil
         foreignCacheScan = nil
         do {
             try PairingRecordStore.remove()
@@ -178,10 +183,13 @@ final class AirLiftCoordinator: ObservableObject {
 
     func inspectContainer(bundleID: String) {
         guard !checkingContainer, !checkingCanary, !checkingCacheTraversal,
-              !scanningForeignCache, !deletingForeignCache, !pairing else { return }
+              !scanningForeignCache, !deletingForeignCache, !checkingRemoteAfc,
+              !pairing else { return }
         inspectedContainerPath = nil
+        inspectedBundleIdentifier = nil
         foreignCacheScan = nil
         foreignCacheDiagnostic = "尚未扫描目标 App 的缓存"
+        remoteAfcDiagnostic = "尚未检查 HouseArrest 远程 AFC 的容器访问权限"
         cacheTraversalDiagnostic = "尚未检测其他 App 的缓存目录权限"
         guard let record = PairingRecordStore.activePath else {
             diagnostic = "请先完成配对或导入配对文件。"
@@ -218,6 +226,7 @@ final class AirLiftCoordinator: ObservableObject {
                 self.checkingContainer = false
                 if rc == 0, let path, !path.isEmpty {
                     self.inspectedContainerPath = path
+                    self.inspectedBundleIdentifier = candidate
                     self.diagnostic = "设备服务返回了 \(candidate) 的容器路径：\(path)。这只验证查询，未证明缓存可枚举或可删除。"
                 } else {
                     self.diagnostic = "容器查询未成功：\(message)。请检查 VPN 地址、配对记录以及 App 是否已安装。"
@@ -354,6 +363,50 @@ final class AirLiftCoordinator: ObservableObject {
                 self.deletingForeignCache = false
                 self.foreignCacheScan = nil
                 self.foreignCacheDiagnostic = result.summary
+            }
+        }
+    }
+
+    /// Remote, read-only HouseArrest/AFC permission probe. This is deliberately
+    /// separate from the AirTraffic file-copy exploit and from direct POSIX IO.
+    func inspectRemoteAfcContainer() {
+        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
+              !scanningForeignCache, !deletingForeignCache, !checkingRemoteAfc,
+              let bundleID = inspectedBundleIdentifier,
+              let record = PairingRecordStore.activePath else {
+            remoteAfcDiagnostic = "先通过设备服务查询目标 App 的容器路径。"
+            return
+        }
+        guard AirLiftNetwork.configureTarget() else {
+            remoteAfcDiagnostic = "请配置合法的 LocalDevVPN 设备 IP。"
+            return
+        }
+        let host = AirLiftNetwork.targetHost
+        checkingRemoteAfc = true
+        remoteAfcDiagnostic = "正在通过 RSD → HouseArrest → AFC 只读检查目标 App 的缓存目录…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            var output = [CChar](repeating: 0, count: 2048)
+            let code = output.withUnsafeMutableBufferPointer { destination in
+                host.withCString { address in
+                    record.withCString { pairingPath in
+                        bundleID.withCString { bundle in
+                            cg_probe_house_arrest(
+                                address, pairingPath, bundle,
+                                destination.baseAddress, destination.count
+                            )
+                        }
+                    }
+                }
+            }
+            let detail = output.withUnsafeBufferPointer {
+                String(cString: $0.baseAddress!)
+            }
+            DispatchQueue.main.async {
+                self.checkingRemoteAfc = false
+                self.remoteAfcDiagnostic = "远程 AFC 检查返回 \(code)：\(detail)"
+                    + (code == 0
+                       ? "\n至少一个远程目录可列举。后续还必须单独验证写权限与精确删除行为；本次未删除。"
+                       : "\n这条服务路线当前未获得目标缓存目录权限；不会退回已失败的直接 POSIX 删除。")
             }
         }
     }

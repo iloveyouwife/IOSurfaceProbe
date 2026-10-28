@@ -1,4 +1,4 @@
-# CacheGuard 0.5.1：AirLift / AirBeep 配对与缓存清理
+# CacheGuard 0.6：AirLift / AirBeep 配对与远程 AFC 探测
 
 本工程以 **iOS 27.0.1 真机**为目标。参考 [AirBeep](https://github.com/LinkPass888/AirBeep) 的配对顺序，独立实现了本机 RPPairing 宿主；调用的原生 API 来自 MIT 许可的 [AirCard-iOS/AirliftFFI](https://github.com/Mak5er/AirCard-iOS)。AirBeep 主项目是 GPL-3.0，本工程没有复制其 Swift 文件。
 
@@ -32,6 +32,12 @@
 参考 3105 源码 `LimitedCleanerService`，缓存清理限定两个相对目录：`Library/Caches` 与 `tmp`。3105 使用 `openat` / `readdir` / `unlinkat` 直接遍历、删除；它的前提是进程已获得目标容器的访问权限。AirLift 当前配对后能通过 InstallationProxy 查到容器路径，但并不自动解除本 App 的沙盒限制。v0.4 增加只读 `open`/`fdopendir` 探测，显示顶层条目数量或错误码，明确两条路径是否可以直接访问。没有可验证权限时，删除仍然关闭。
 
 AirCard 的 Rust 依赖还包含 AFC / HouseArrest 的 `ReadDir`、`RemovePath` 接口，但这只是服务 API 存在，尚未验证该设备服务允许访问微信完整容器。不能把导出接口等同于已获得任意 App 删除权限。
+
+## 0.6 远程 HouseArrest / AFC 验证
+
+已收到 iOS 27.0.1 真机结果：`Library/Caches` 与 `tmp` 均 `errno=1`，所以 v0.5.1 的本地 3105 POSIX 清理路线在该设备签名模式下不可用。v0.6 在用户界面移除这两个失败入口，新增完全不同的远程验证：RPPairing → RSD（49152）→ HouseArrest → VendContainer → AFC ListDirectory。只列根目录数量、不返回文件名、不读取文件、不触发删除。如果 HouseArrest 拒绝 App Store 容器，则不能把这条路线冒充成功；须继续研究 AirTraffic 权限本身是否允许受控目录操作。
+
+当前版本的远程探测尚未获得用户真机回报，因此不声称已经支持跨 App 实际删除。
 
 ## 0.5 参考 3105 的受控删除
 

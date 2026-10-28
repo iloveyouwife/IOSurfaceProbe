@@ -6,7 +6,6 @@ struct AirLiftSetupView: View {
     @State private var importing = false
     @State private var forgetConfirmation = false
     @State private var repeatPairingConfirmation = false
-    @State private var confirmCacheDeletion = false
     @State private var targetHost = AirLiftNetwork.targetHost
     @State private var networkError: String?
     @State private var bundleIdentifier = "com.tencent.xin"
@@ -116,7 +115,22 @@ struct AirLiftSetupView: View {
                     .textSelection(.enabled)
             }
 
-            Section("第四步 · 安全读取通道测试") {
+            Section("第四步 · 新路线：远程 HouseArrest/AFC") {
+                Text("这一步不访问本 App 的 POSIX 文件系统，而是复用现有配对，经 LocalDevVPN 的 RSD 隧道连接 HouseArrest 服务，再尝试通过 AFC 列举目标 App 的 Library/Caches 和 tmp。只返回是否有权限及条目数量，不读取文件内容、不删除。")
+                    .font(.footnote)
+                Button {
+                    bridge.inspectRemoteAfcContainer()
+                } label: {
+                    if bridge.checkingRemoteAfc { ProgressView().padding(.trailing, 5) }
+                    Text(bridge.checkingRemoteAfc ? "正在远程检查目录权限…" : "测试远程 AFC 容器访问")
+                }
+                .disabled(bridge.inspectedBundleIdentifier == nil || bridge.checkingRemoteAfc || bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.checkingCacheTraversal || bridge.scanningForeignCache || bridge.deletingForeignCache)
+                Text(bridge.remoteAfcDiagnostic)
+                    .font(.footnote)
+                    .textSelection(.enabled)
+            }
+
+            Section("附加 · AirLift 单文件读取测试") {
                 Text("清存会在自己的临时目录创建一个随机测试文件，通过 AirLift 读取并比对，随后删除该测试文件。不会访问微信的配置、聊天或缓存内容。")
                     .font(.footnote)
                 Button {
@@ -131,50 +145,10 @@ struct AirLiftSetupView: View {
                     .textSelection(.enabled)
             }
 
-            Section("第五步 · 3105 清理方式兼容性") {
-                Text("只检测刚才查询到的 App 的 Library/Caches 和 tmp 两个目录能否通过本进程直接遍历。仅统计顶层项目数量，不读取内容，也不删除任何文件。")
-                    .font(.footnote)
-                Button {
-                    bridge.inspectCacheDirectoryAccess()
-                } label: {
-                    if bridge.checkingCacheTraversal { ProgressView().padding(.trailing, 5) }
-                    Text(bridge.checkingCacheTraversal ? "正在检测目录权限…" : "检测 3105 式缓存目录权限")
-                }
-                .disabled(bridge.inspectedContainerPath == nil || bridge.checkingCacheTraversal || bridge.checkingCanary || bridge.checkingContainer || bridge.pairing || bridge.scanningForeignCache || bridge.deletingForeignCache)
-                Text(bridge.cacheTraversalDiagnostic)
-                    .font(.footnote)
-                    .textSelection(.enabled)
-            }
-
-            Section("第六步 · 3105 式缓存预览与确认清理") {
-                Text("只在刚才查询的目标 App 容器内处理 Library/Caches 和 tmp 中的普通文件。扫描不读取文件内容；删除前须单独确认，且会重新核验每个文件，跳过符号链接、常见数据库/凭据类文件、变化的文件和无权限的目录。不会遍历 Documents。")
-                    .font(.footnote)
-                Button {
-                    bridge.previewForeignCache()
-                } label: {
-                    if bridge.scanningForeignCache { ProgressView().padding(.trailing, 5) }
-                    Text(bridge.scanningForeignCache ? "正在统计可清理缓存…" : "预览可清理文件与大小")
-                }
-                .disabled(bridge.inspectedContainerPath == nil || bridge.checkingCacheTraversal || bridge.checkingCanary || bridge.checkingContainer || bridge.pairing || bridge.scanningForeignCache || bridge.deletingForeignCache)
-                Text(bridge.foreignCacheDiagnostic)
-                    .font(.footnote)
-                    .textSelection(.enabled)
-                if let snapshot = bridge.foreignCacheScan,
-                   !snapshot.files.isEmpty, !snapshot.truncated {
-                    Button(role: .destructive) {
-                        confirmCacheDeletion = true
-                    } label: {
-                        Label("确认清理已预览的 \(snapshot.files.count) 个缓存文件", systemImage: "trash")
-                    }
-                    .disabled(bridge.deletingForeignCache)
-                }
-                if bridge.deletingForeignCache { ProgressView("正在清理…") }
-            }
-
             Section("缓存清理状态") {
-                Label("只支持手动确认的白名单清理", systemImage: "exclamationmark.shield")
+                Label("已停止使用失败的 POSIX 清理路线", systemImage: "exclamationmark.shield")
                     .foregroundStyle(.orange)
-                Text("本模块按 3105 的直接 POSIX 目录方式工作，前提是当前进程确实具有目标 App 缓存目录的读写权限。AirLift 成功配对、获得容器路径或读取本 App 测试文件，并不自动获得此权限。没有权限时只会报错，不会强行删除。")
+                Text("iOS 27.0.1 真机已返回 errno=1，证明直接复用 3105 清理后端不可行。本版改为验证远程 HouseArrest/AFC 的目录权限；未确认其返回结果前不允许跨 App 删除。")
                     .font(.footnote)
                 Text("在 iOS 27.0.1 上也需要真机验证：配对成功不代表漏洞利用一定成功。")
                     .font(.caption)
@@ -198,14 +172,6 @@ struct AirLiftSetupView: View {
             Button("重新配对") { bridge.startOnDevicePairing() }
         } message: {
             Text("仅当现有记录无法再连接时才需要。正常升级、重新打开 App 都应直接使用已保存的记录。")
-        }
-        .alert("确认删除目标 App 的缓存文件？", isPresented: $confirmCacheDeletion) {
-            Button("删除预览中的缓存", role: .destructive) {
-                bridge.deletePreviewedForeignCache()
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("只删除目标 App 的 Library/Caches 和 tmp 下预览且未变化的普通文件，操作不可撤销。某些 App 可能重新下载内容或需要重建缓存。请先退出目标 App。")
         }
     }
 
