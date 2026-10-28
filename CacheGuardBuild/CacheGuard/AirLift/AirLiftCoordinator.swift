@@ -11,11 +11,15 @@ final class AirLiftCoordinator: ObservableObject {
     @Published private(set) var checkingContainer = false
     @Published private(set) var checkingCanary = false
     @Published private(set) var checkingCacheTraversal = false
+    @Published private(set) var scanningForeignCache = false
+    @Published private(set) var deletingForeignCache = false
     @Published private(set) var pin: String?
     @Published private(set) var stage = "等待配对"
     @Published private(set) var diagnostic = "尚未验证设备服务连接"
     @Published private(set) var canaryDiagnostic = "尚未验证 AirLift 单文件读取通道"
     @Published private(set) var cacheTraversalDiagnostic = "尚未检测其他 App 的缓存目录权限"
+    @Published private(set) var foreignCacheDiagnostic = "尚未扫描目标 App 的缓存"
+    @Published private(set) var foreignCacheScan: ForeignCacheCleaner.Snapshot?
     @Published private(set) var hasRecord = PairingRecordStore.activePath != nil
     @Published private(set) var inspectedContainerPath: String?
 
@@ -35,8 +39,10 @@ final class AirLiftCoordinator: ObservableObject {
     }
 
     func importPairingFile(_ url: URL) {
-        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal else { return }
+        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
+              !scanningForeignCache, !deletingForeignCache else { return }
         inspectedContainerPath = nil
+        foreignCacheScan = nil
         do {
             _ = try PairingRecordStore.importRecord(from: url)
             stage = "配对文件已导入；尚未验证跨沙盒权限"
@@ -48,8 +54,10 @@ final class AirLiftCoordinator: ObservableObject {
     }
 
     func forgetPairing() {
-        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal else { return }
+        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
+              !scanningForeignCache, !deletingForeignCache else { return }
         inspectedContainerPath = nil
+        foreignCacheScan = nil
         do {
             try PairingRecordStore.remove()
             stage = "本地配对记录已移除"
@@ -61,7 +69,8 @@ final class AirLiftCoordinator: ObservableObject {
     }
 
     func startOnDevicePairing() {
-        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal else { return }
+        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
+              !scanningForeignCache, !deletingForeignCache else { return }
         guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 else {
             stage = "系统设置内配对要求 iOS 27 或更高版本；可导入电脑生成的配对文件。"
             return
@@ -168,8 +177,11 @@ final class AirLiftCoordinator: ObservableObject {
     }
 
     func inspectContainer(bundleID: String) {
-        guard !checkingContainer, !checkingCanary, !checkingCacheTraversal, !pairing else { return }
+        guard !checkingContainer, !checkingCanary, !checkingCacheTraversal,
+              !scanningForeignCache, !deletingForeignCache, !pairing else { return }
         inspectedContainerPath = nil
+        foreignCacheScan = nil
+        foreignCacheDiagnostic = "尚未扫描目标 App 的缓存"
         cacheTraversalDiagnostic = "尚未检测其他 App 的缓存目录权限"
         guard let record = PairingRecordStore.activePath else {
             diagnostic = "请先完成配对或导入配对文件。"
@@ -218,7 +230,8 @@ final class AirLiftCoordinator: ObservableObject {
     /// is opened and no system file is modified. Result verifies transport,
     /// not third-party cache or directory access.
     func checkReadTransportWithOwnCanary() {
-        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal else { return }
+        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
+              !scanningForeignCache, !deletingForeignCache else { return }
         guard let pairingPath = PairingRecordStore.activePath else {
             canaryDiagnostic = "请先完成配对。"
             return
@@ -274,6 +287,7 @@ final class AirLiftCoordinator: ObservableObject {
     /// active process sandbox. No deletion, writes or file content reads.
     func inspectCacheDirectoryAccess() {
         guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
+              !scanningForeignCache, !deletingForeignCache,
               let container = inspectedContainerPath,
               CacheTraversalProbe.validateAppRoot(container) else {
             cacheTraversalDiagnostic = "先成功查询目标 App 的数据容器。"
@@ -293,6 +307,53 @@ final class AirLiftCoordinator: ObservableObject {
                     ? "存在可读取的缓存目录；后续才可测试 3105 式受控扫描，当前不会删除。"
                     : "当前进程无法直接遍历这些目录；需要研究 AirLift 远程 AFC/HouseArrest 后端，不能直接复制 unlinkat 删除。"
                 )
+            }
+        }
+    }
+
+    /// Preview only, restricted to Library/Caches and tmp. Can run even when
+    /// the earlier fast probe fails so the user gets a concrete access error.
+    func previewForeignCache() {
+        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
+              !scanningForeignCache, !deletingForeignCache,
+              let container = inspectedContainerPath,
+              CacheTraversalProbe.validateAppRoot(container) else {
+            foreignCacheDiagnostic = "先通过设备服务查询目标 App 的真实容器。"
+            return
+        }
+        foreignCacheScan = nil
+        scanningForeignCache = true
+        foreignCacheDiagnostic = "正在只读统计 Library/Caches 和 tmp 内的普通文件…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let snapshot = ForeignCacheCleaner.preview(container: container)
+            DispatchQueue.main.async {
+                self.scanningForeignCache = false
+                guard self.inspectedContainerPath == container else { return }
+                self.foreignCacheScan = snapshot
+                self.foreignCacheDiagnostic = snapshot.summary
+                    + (snapshot.accessibleScopes == 0
+                       ? "。本进程没有目录遍历权限，不能使用 3105 的直接删除方式。"
+                       : "。预览不修改任何文件；只有手动再次确认才会开始删除。")
+            }
+        }
+    }
+
+    /// Called only from the user-visible destructive confirmation dialog.
+    func deletePreviewedForeignCache() {
+        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
+              !scanningForeignCache, !deletingForeignCache,
+              let snapshot = foreignCacheScan,
+              let container = inspectedContainerPath,
+              snapshot.container == container,
+              !snapshot.truncated, !snapshot.files.isEmpty else { return }
+        deletingForeignCache = true
+        foreignCacheDiagnostic = "正在删除预览且未发生变化的缓存普通文件，不删除目录、符号链接或其他 App 数据…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = ForeignCacheCleaner.delete(snapshot)
+            DispatchQueue.main.async {
+                self.deletingForeignCache = false
+                self.foreignCacheScan = nil
+                self.foreignCacheDiagnostic = result.summary
             }
         }
     }

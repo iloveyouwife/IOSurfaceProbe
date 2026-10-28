@@ -6,6 +6,7 @@ struct AirLiftSetupView: View {
     @State private var importing = false
     @State private var forgetConfirmation = false
     @State private var repeatPairingConfirmation = false
+    @State private var confirmCacheDeletion = false
     @State private var targetHost = AirLiftNetwork.targetHost
     @State private var networkError: String?
     @State private var bundleIdentifier = "com.tencent.xin"
@@ -41,7 +42,7 @@ struct AirLiftSetupView: View {
                     Label("已配对：跳过本步骤，直接连接 LocalDevVPN", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                     Button("仅在连接失效时重新配对") { repeatPairingConfirmation = true }
-                        .disabled(bridge.checkingContainer || bridge.checkingCanary || bridge.checkingCacheTraversal)
+                        .disabled(bridge.checkingContainer || bridge.checkingCanary || bridge.checkingCacheTraversal || bridge.scanningForeignCache || bridge.deletingForeignCache)
                 } else {
                     Text("1. 开启“设置 → 隐私与安全性 → 开发者模式”。")
                     Text("2. 首次点击配对按钮，并允许“本地网络”权限。")
@@ -53,7 +54,7 @@ struct AirLiftSetupView: View {
                         if bridge.pairing { ProgressView().padding(.trailing, 5) }
                         Text(bridge.pairing ? "等待系统设置确认…" : "首次本机配对")
                     }
-                    .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.checkingCacheTraversal)
+                    .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.checkingCacheTraversal || bridge.scanningForeignCache || bridge.deletingForeignCache)
                     Text("配对服务没有原生取消接口；卡住时可以关闭并重开 App。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -64,10 +65,10 @@ struct AirLiftSetupView: View {
                 Text("如果设置里没有配对入口，可从电脑、SideStore、LiveContainer 等导出配对文件，然后在本机导入。")
                     .font(.footnote)
                 Button("从文件 App 导入配对记录") { importing = true }
-                    .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary)
+                    .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.scanningForeignCache || bridge.deletingForeignCache)
                 if bridge.hasRecord {
                     Button("忘记本地配对记录", role: .destructive) { forgetConfirmation = true }
-                        .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary)
+                        .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.scanningForeignCache || bridge.deletingForeignCache)
                 }
                 Text("配对记录包含设备信任凭据，仅保存在 App 私有目录、排除系统备份；请勿发送到聊天、网盘或公开仓库。")
                     .font(.caption)
@@ -109,7 +110,7 @@ struct AirLiftSetupView: View {
                     if bridge.checkingContainer { ProgressView().padding(.trailing, 5) }
                     Text(bridge.checkingContainer ? "正在查询设备服务…" : "验证 App 容器查询")
                 }
-                .disabled(!bridge.hasRecord || bridge.pairing || bridge.checkingContainer || bridge.checkingCanary)
+                .disabled(!bridge.hasRecord || bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.scanningForeignCache || bridge.deletingForeignCache)
                 Text(bridge.diagnostic)
                     .font(.footnote)
                     .textSelection(.enabled)
@@ -124,7 +125,7 @@ struct AirLiftSetupView: View {
                     if bridge.checkingCanary { ProgressView().padding(.trailing, 5) }
                     Text(bridge.checkingCanary ? "正在核对测试文件…" : "测试 AirLift 单文件读取")
                 }
-                .disabled(!bridge.hasRecord || bridge.pairing || bridge.checkingContainer || bridge.checkingCanary)
+                .disabled(!bridge.hasRecord || bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.scanningForeignCache || bridge.deletingForeignCache)
                 Text(bridge.canaryDiagnostic)
                     .font(.footnote)
                     .textSelection(.enabled)
@@ -139,16 +140,41 @@ struct AirLiftSetupView: View {
                     if bridge.checkingCacheTraversal { ProgressView().padding(.trailing, 5) }
                     Text(bridge.checkingCacheTraversal ? "正在检测目录权限…" : "检测 3105 式缓存目录权限")
                 }
-                .disabled(bridge.inspectedContainerPath == nil || bridge.checkingCacheTraversal || bridge.checkingCanary || bridge.checkingContainer || bridge.pairing)
+                .disabled(bridge.inspectedContainerPath == nil || bridge.checkingCacheTraversal || bridge.checkingCanary || bridge.checkingContainer || bridge.pairing || bridge.scanningForeignCache || bridge.deletingForeignCache)
                 Text(bridge.cacheTraversalDiagnostic)
                     .font(.footnote)
                     .textSelection(.enabled)
             }
 
+            Section("第六步 · 3105 式缓存预览与确认清理") {
+                Text("只在刚才查询的目标 App 容器内处理 Library/Caches 和 tmp 中的普通文件。扫描不读取文件内容；删除前须单独确认，且会重新核验每个文件，跳过符号链接、变化的文件和无权限的目录。不会触碰 Documents 或聊天数据库。")
+                    .font(.footnote)
+                Button {
+                    bridge.previewForeignCache()
+                } label: {
+                    if bridge.scanningForeignCache { ProgressView().padding(.trailing, 5) }
+                    Text(bridge.scanningForeignCache ? "正在统计可清理缓存…" : "预览可清理文件与大小")
+                }
+                .disabled(bridge.inspectedContainerPath == nil || bridge.checkingCacheTraversal || bridge.checkingCanary || bridge.checkingContainer || bridge.pairing || bridge.scanningForeignCache || bridge.deletingForeignCache)
+                Text(bridge.foreignCacheDiagnostic)
+                    .font(.footnote)
+                    .textSelection(.enabled)
+                if let snapshot = bridge.foreignCacheScan,
+                   !snapshot.files.isEmpty, !snapshot.truncated {
+                    Button(role: .destructive) {
+                        confirmCacheDeletion = true
+                    } label: {
+                        Label("确认清理已预览的 \(snapshot.files.count) 个缓存文件", systemImage: "trash")
+                    }
+                    .disabled(bridge.deletingForeignCache)
+                }
+                if bridge.deletingForeignCache { ProgressView("正在清理…") }
+            }
+
             Section("缓存清理状态") {
-                Label("跨 App 自动清理尚未启用", systemImage: "exclamationmark.shield")
+                Label("只支持手动确认的白名单清理", systemImage: "exclamationmark.shield")
                     .foregroundStyle(.orange)
-                Text("AirLift 能访问部分文件，不等于有稳定的“列目录 + 删除”接口。当前 FFI 提供配对、容器查询、读取指定文件、写入目录等接口；在验证精确删除语义和缓存白名单之前，不进行跨 App 删除。")
+                Text("本模块按 3105 的直接 POSIX 目录方式工作，前提是当前进程确实具有目标 App 缓存目录的读写权限。AirLift 成功配对、获得容器路径或读取本 App 测试文件，并不自动获得此权限。没有权限时只会报错，不会强行删除。")
                     .font(.footnote)
                 Text("在 iOS 27.0.1 上也需要真机验证：配对成功不代表漏洞利用一定成功。")
                     .font(.caption)
@@ -172,6 +198,14 @@ struct AirLiftSetupView: View {
             Button("重新配对") { bridge.startOnDevicePairing() }
         } message: {
             Text("仅当现有记录无法再连接时才需要。正常升级、重新打开 App 都应直接使用已保存的记录。")
+        }
+        .alert("确认删除目标 App 的缓存文件？", isPresented: $confirmCacheDeletion) {
+            Button("删除预览中的缓存", role: .destructive) {
+                bridge.deletePreviewedForeignCache()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只删除目标 App 的 Library/Caches 和 tmp 下预览且未变化的普通文件，操作不可撤销。某些 App 可能重新下载内容或需要重建缓存。请先退出目标 App。")
         }
     }
 
