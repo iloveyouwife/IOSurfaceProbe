@@ -14,6 +14,7 @@
 - 使用 IOKit.framework 的标准匹配函数分别探测 IOSurfaceRoot 和 IOCoreSurfaceRoot 两种标识，并区分 class matching / service-name matching。
 - 对找到的服务尝试标准的 IOServiceOpen(type=0)；无论成功与否都立即释放查询对象，成功时再关闭连接。
 - 记录系统版本、服务是否可见及完整内核返回码（例如 0x00000000）。
+- 1.1 版还通过只读接口 IOObjectGetClass、IORegistryEntryGetRegistryEntryID 查询服务实际类名和注册表对象 ID，以判断不同匹配方式是否命中同一服务。
 - 没有外部方法调用、竞态压力测试或异常参数。
 
 ## 怎么解释
