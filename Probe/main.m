@@ -12,6 +12,7 @@ typedef kern_return_t (*CloseFn)(uint32_t);
 typedef kern_return_t (*ReleaseFn)(uint32_t);
 typedef kern_return_t (*GetClassFn)(uint32_t, char *);
 typedef kern_return_t (*RegistryIDFn)(uint32_t, uint64_t *);
+typedef kern_return_t (*ConnectServiceFn)(uint32_t, uint32_t *);
 
 static NSString *RunProbe(void) {
     NSMutableString *out = [NSMutableString stringWithFormat:
@@ -30,6 +31,7 @@ static NSString *RunProbe(void) {
     ReleaseFn release = (ReleaseFn)dlsym(lib, "IOObjectRelease");
     GetClassFn getClass = (GetClassFn)dlsym(lib, "IOObjectGetClass");
     RegistryIDFn getRegistryID = (RegistryIDFn)dlsym(lib, "IORegistryEntryGetRegistryEntryID");
+    ConnectServiceFn getConnectService = (ConnectServiceFn)dlsym(lib, "IOConnectGetService");
     if (!matchClass || !matchName || !getService || !openService || !closeService || !release) {
         [out appendString:@"Required IOKit symbol unavailable.\n"];
         dlclose(lib);
@@ -57,9 +59,12 @@ static NSString *RunProbe(void) {
                 classKR == KERN_SUCCESS ? [NSString stringWithUTF8String:className] : @"unavailable",
                 (unsigned)classKR];
         }
+        uint64_t originalEntryID = 0;
+        BOOL originalEntryIDValid = NO;
         if (getRegistryID) {
             uint64_t entryID = 0;
             kern_return_t idKR = getRegistryID(service, &entryID);
+            if (idKR == KERN_SUCCESS) { originalEntryID = entryID; originalEntryIDValid = YES; }
             [out appendFormat:@"   IORegistryEntryID: 0x%016llx (status 0x%08x)\n",
                 (unsigned long long)entryID, (unsigned)idKR];
         }
@@ -69,6 +74,41 @@ static NSString *RunProbe(void) {
             (unsigned)kr, (int)kr];
         if (kr == KERN_SUCCESS && connection != MACH_PORT_NULL) {
             [out appendString:@"   OPEN ALLOWED for this app.\n"];
+            // Read-only connection identity: never dispatch an external method.
+            if (getClass) {
+                char connectionClass[128] = {0};
+                kern_return_t classKR = getClass(connection, connectionClass);
+                [out appendFormat:@"   Connection class: %@ (0x%08x)\n",
+                    classKR == KERN_SUCCESS ? [NSString stringWithUTF8String:connectionClass] : @"unavailable",
+                    (unsigned)classKR];
+            }
+            if (getConnectService) {
+                uint32_t connectedService = MACH_PORT_NULL;
+                kern_return_t connectionKR = getConnectService(connection, &connectedService);
+                [out appendFormat:@"   IOConnectGetService: 0x%08x\n", (unsigned)connectionKR];
+                if (connectionKR == KERN_SUCCESS && connectedService != MACH_PORT_NULL) {
+                    if (getClass) {
+                        char associatedClass[128] = {0};
+                        kern_return_t classKR = getClass(connectedService, associatedClass);
+                        [out appendFormat:@"   Connected service class: %@ (0x%08x)\n",
+                            classKR == KERN_SUCCESS ? [NSString stringWithUTF8String:associatedClass] : @"unavailable",
+                            (unsigned)classKR];
+                    }
+                    if (getRegistryID) {
+                        uint64_t associatedID = 0;
+                        kern_return_t idKR = getRegistryID(connectedService, &associatedID);
+                        [out appendFormat:@"   Connected service ID: 0x%016llx (0x%08x)\n",
+                            (unsigned long long)associatedID, (unsigned)idKR];
+                        if (idKR == KERN_SUCCESS && originalEntryIDValid) {
+                            [out appendFormat:@"   Connection service matches: %@\n",
+                                associatedID == originalEntryID ? @"YES" : @"NO"];
+                        }
+                    }
+                    release(connectedService);
+                }
+            } else {
+                [out appendString:@"   IOConnectGetService unavailable on this OS.\n"];
+            }
             kern_return_t closeKR = closeService(connection);
             [out appendFormat:@"   IOServiceClose: 0x%08x\n", (unsigned)closeKR];
         } else {
@@ -77,7 +117,7 @@ static NSString *RunProbe(void) {
         release(service);
         [out appendString:@"\n"];
     }
-    [out appendString:@"A successful open does not prove specific external methods or exploitation are available.\n"];
+    [out appendString:@"Connection identity does not prove external-method dispatch or exploitation.\n"];
     dlclose(lib);
     return out;
 }
