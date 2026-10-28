@@ -1,0 +1,46 @@
+name: CacheGuard
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "18.0"
+  xcodeVersion: "27.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    CODE_SIGN_STYLE: Automatic
+targets:
+  CacheGuard:
+    type: application
+    platform: iOS
+    sources:
+      - path: CacheGuard
+    dependencies:
+      - framework: Vendor/AirCard/AirliftFFI.xcframework
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.cacheguard
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: CacheGuard/Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: 清存
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "用于与本机开发者模式进行设备配对，仅访问本地设备服务。"
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        MARKETING_VERSION: 0.2.0
+        CURRENT_PROJECT_VERSION: 2
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-lc++"
+          - "-Wl,-u,_al_pairing_run_host"
+          - "-Wl,-u,_al_find_app_container"
+          - "-Wl,-u,_al_set_target_host"
+  CacheGuardTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: CacheGuardTests
+    dependencies:
+      - target: CacheGuard
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.cacheguard.tests

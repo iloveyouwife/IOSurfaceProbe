@@ -1,0 +1,73 @@
+name: Build CacheGuard AirLift unsigned IPA
+
+on:
+  push:
+    branches:
+      - cacheguard-ipa
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Inspect Xcode
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Fetch pinned AirLift native framework
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/LinkPass888/AirBeep.git "$RUNNER_TEMP/AirBeep"
+          git -C "$RUNNER_TEMP/AirBeep" checkout 0052ecbc961ba1965587839bda388150027a5cc4
+          src="$RUNNER_TEMP/AirBeep/Vendor/AirCard/AirliftFFI.xcframework"
+          test -f "$src/ios-arm64/libairlift_ffi.a"
+          hash=$(shasum -a 256 "$src/ios-arm64/libairlift_ffi.a" | awk '{print $1}')
+          test "$hash" = "1ec4b02710aedab8215a7d41bb70ff54d1de80e5c63d594cf8cd98f34a59808c"
+          mkdir -p CacheGuardBuild/Vendor/AirCard
+          cp -R "$src" CacheGuardBuild/Vendor/AirCard/
+
+      - name: Generate Xcode project
+        run: |
+          cd CacheGuardBuild
+          xcodegen generate
+
+      - name: Compile without Apple signing credentials
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project CacheGuardBuild/CacheGuard.xcodeproj \
+            -scheme CacheGuard \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$PWD/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          test -d DerivedData/Build/Products/Release-iphoneos/CacheGuard.app
+          mkdir -p Payload
+          cp -R DerivedData/Build/Products/Release-iphoneos/CacheGuard.app Payload/
+          zip -q -r CacheGuard-AirLift-iOS27-unsigned.ipa Payload
+          unzip -tq CacheGuard-AirLift-iOS27-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: CacheGuard-AirLift-iOS27-unsigned
+          path: CacheGuard-AirLift-iOS27-unsigned.ipa
+          if-no-files-found: error
