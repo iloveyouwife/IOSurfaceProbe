@@ -26,8 +26,8 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: 清存
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: "用于与本机开发者模式进行设备配对，仅访问本地设备服务。"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        MARKETING_VERSION: 0.6.0
-        CURRENT_PROJECT_VERSION: 7
+        MARKETING_VERSION: 0.7.0
+        CURRENT_PROJECT_VERSION: 8
         SWIFT_OBJC_BRIDGING_HEADER: CacheGuard/CacheGuard-Bridging-Header.h
         OTHER_LDFLAGS:
           - "$(inherited)"
@@ -35,6 +35,7 @@ targets:
           - "-Wl,-u,_al_pairing_run_host"
           - "-Wl,-u,_al_find_app_container"
           - "-Wl,-u,_al_exploit_read_file"
+          - "-Wl,-u,_al_exploit_run"
           - "-Wl,-u,_al_bytes_free"
           - "-Wl,-u,_al_set_target_host"
   CacheGuardTests:

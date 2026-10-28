@@ -6,6 +6,8 @@ struct AirLiftSetupView: View {
     @State private var importing = false
     @State private var forgetConfirmation = false
     @State private var repeatPairingConfirmation = false
+    @State private var confirmAirTrafficTest = false
+    @State private var pendingAirTrafficScope = "Library/Caches"
     @State private var targetHost = AirLiftNetwork.targetHost
     @State private var networkError: String?
     @State private var bundleIdentifier = "com.tencent.xin"
@@ -41,7 +43,7 @@ struct AirLiftSetupView: View {
                     Label("已配对：跳过本步骤，直接连接 LocalDevVPN", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                     Button("仅在连接失效时重新配对") { repeatPairingConfirmation = true }
-                        .disabled(bridge.checkingContainer || bridge.checkingCanary || bridge.checkingCacheTraversal || bridge.scanningForeignCache || bridge.deletingForeignCache)
+                        .disabled(bridge.checkingContainer || bridge.checkingCanary || bridge.checkingCacheTraversal || bridge.scanningForeignCache || bridge.deletingForeignCache || bridge.checkingAirTrafficCache)
                 } else {
                     Text("1. 开启“设置 → 隐私与安全性 → 开发者模式”。")
                     Text("2. 首次点击配对按钮，并允许“本地网络”权限。")
@@ -53,7 +55,7 @@ struct AirLiftSetupView: View {
                         if bridge.pairing { ProgressView().padding(.trailing, 5) }
                         Text(bridge.pairing ? "等待系统设置确认…" : "首次本机配对")
                     }
-                    .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.checkingCacheTraversal || bridge.scanningForeignCache || bridge.deletingForeignCache)
+                    .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.checkingCacheTraversal || bridge.scanningForeignCache || bridge.deletingForeignCache || bridge.checkingAirTrafficCache)
                     Text("配对服务没有原生取消接口；卡住时可以关闭并重开 App。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -64,10 +66,10 @@ struct AirLiftSetupView: View {
                 Text("如果设置里没有配对入口，可从电脑、SideStore、LiveContainer 等导出配对文件，然后在本机导入。")
                     .font(.footnote)
                 Button("从文件 App 导入配对记录") { importing = true }
-                    .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.scanningForeignCache || bridge.deletingForeignCache)
+                    .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.scanningForeignCache || bridge.deletingForeignCache || bridge.checkingAirTrafficCache)
                 if bridge.hasRecord {
                     Button("忘记本地配对记录", role: .destructive) { forgetConfirmation = true }
-                        .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.scanningForeignCache || bridge.deletingForeignCache)
+                        .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.scanningForeignCache || bridge.deletingForeignCache || bridge.checkingAirTrafficCache)
                 }
                 Text("配对记录包含设备信任凭据，仅保存在 App 私有目录、排除系统备份；请勿发送到聊天、网盘或公开仓库。")
                     .font(.caption)
@@ -109,25 +111,34 @@ struct AirLiftSetupView: View {
                     if bridge.checkingContainer { ProgressView().padding(.trailing, 5) }
                     Text(bridge.checkingContainer ? "正在查询设备服务…" : "验证 App 容器查询")
                 }
-                .disabled(!bridge.hasRecord || bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.scanningForeignCache || bridge.deletingForeignCache)
+                .disabled(!bridge.hasRecord || bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.scanningForeignCache || bridge.deletingForeignCache || bridge.checkingAirTrafficCache)
                 Text(bridge.diagnostic)
                     .font(.footnote)
                     .textSelection(.enabled)
             }
 
-            Section("第四步 · 新路线：远程 HouseArrest/AFC") {
-                Text("这一步不访问本 App 的 POSIX 文件系统，而是复用现有配对，经 LocalDevVPN 的 RSD 隧道连接 HouseArrest 服务，再尝试通过 AFC 列举目标 App 的 Library/Caches 和 tmp。只返回是否有权限及条目数量，不读取文件内容、不删除。")
+            Section("第四步 · 直接测试 AirLift 漏洞对缓存目录的读写") {
+                Text("直接使用 AirTraffic/ATAirlock 漏洞，对刚才查询出的 App 真实缓存路径写入随机测试文件，尝试读回校验并清理。不是 POSIX，也不是已被拒绝的 HouseArrest。")
                     .font(.footnote)
-                Button {
-                    bridge.inspectRemoteAfcContainer()
-                } label: {
-                    if bridge.checkingRemoteAfc { ProgressView().padding(.trailing, 5) }
-                    Text(bridge.checkingRemoteAfc ? "正在远程检查目录权限…" : "测试远程 AFC 容器访问")
+                Button("测试 Library/Caches") {
+                    pendingAirTrafficScope = "Library/Caches"
+                    confirmAirTrafficTest = true
                 }
-                .disabled(bridge.inspectedBundleIdentifier == nil || bridge.checkingRemoteAfc || bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.checkingCacheTraversal || bridge.scanningForeignCache || bridge.deletingForeignCache)
-                Text(bridge.remoteAfcDiagnostic)
+                .disabled(bridge.inspectedContainerPath == nil || bridge.checkingAirTrafficCache || bridge.pairing || bridge.checkingContainer || bridge.checkingCanary)
+                Button("测试 tmp") {
+                    pendingAirTrafficScope = "tmp"
+                    confirmAirTrafficTest = true
+                }
+                .disabled(bridge.inspectedContainerPath == nil || bridge.checkingAirTrafficCache || bridge.pairing || bridge.checkingContainer || bridge.checkingCanary)
+                if bridge.checkingAirTrafficCache {
+                    ProgressView("正在通过 AirTraffic 同步测试文件…")
+                }
+                Text(bridge.airTrafficCacheDiagnostic)
                     .font(.footnote)
                     .textSelection(.enabled)
+                Text("测试会暂时修改目标 App 的缓存目录及 Books 同步状态，原生库会尝试恢复；如测试中断，可能残留测试文件。不要在有重要数据或未备份的设备上随意重复。")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
 
             Section("附加 · AirLift 单文件读取测试") {
@@ -139,7 +150,7 @@ struct AirLiftSetupView: View {
                     if bridge.checkingCanary { ProgressView().padding(.trailing, 5) }
                     Text(bridge.checkingCanary ? "正在核对测试文件…" : "测试 AirLift 单文件读取")
                 }
-                .disabled(!bridge.hasRecord || bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.scanningForeignCache || bridge.deletingForeignCache)
+                .disabled(!bridge.hasRecord || bridge.pairing || bridge.checkingContainer || bridge.checkingCanary || bridge.scanningForeignCache || bridge.deletingForeignCache || bridge.checkingAirTrafficCache)
                 Text(bridge.canaryDiagnostic)
                     .font(.footnote)
                     .textSelection(.enabled)
@@ -148,7 +159,7 @@ struct AirLiftSetupView: View {
             Section("缓存清理状态") {
                 Label("已停止使用失败的 POSIX 清理路线", systemImage: "exclamationmark.shield")
                     .foregroundStyle(.orange)
-                Text("iOS 27.0.1 真机已返回 errno=1，证明直接复用 3105 清理后端不可行。本版改为验证远程 HouseArrest/AFC 的目录权限；未确认其返回结果前不允许跨 App 删除。")
+                Text("已对比 3105 的准确白名单路径，本版直接以 AirLift 原生漏洞测试相同的 Library/Caches 和 tmp。测试文件写入成功仅验证这一路径，尚未证明能枚举并清理其中原有的全部文件。")
                     .font(.footnote)
                 Text("在 iOS 27.0.1 上也需要真机验证：配对成功不代表漏洞利用一定成功。")
                     .font(.caption)
@@ -172,6 +183,14 @@ struct AirLiftSetupView: View {
             Button("重新配对") { bridge.startOnDevicePairing() }
         } message: {
             Text("仅当现有记录无法再连接时才需要。正常升级、重新打开 App 都应直接使用已保存的记录。")
+        }
+        .alert("允许 AirLift 写入目标 App 的临时测试文件？", isPresented: $confirmAirTrafficTest) {
+            Button("执行 \(pendingAirTrafficScope) 读写测试") {
+                bridge.testAirTrafficCacheRoot(pendingAirTrafficScope)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将在已查询的目标 App 的 \(pendingAirTrafficScope) 内创建随机测试文件，并尝试读回和清理。操作涉及系统 Books 同步状态，建议先备份；若中断，可能留下测试文件。不会主动读取聊天记录。")
         }
     }
 

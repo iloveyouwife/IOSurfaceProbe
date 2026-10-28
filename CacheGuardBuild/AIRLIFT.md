@@ -1,4 +1,4 @@
-# CacheGuard 0.6：AirLift / AirBeep 配对与远程 AFC 探测
+# CacheGuard 0.7：3105 目录与 AirLift 读写能力对照
 
 本工程以 **iOS 27.0.1 真机**为目标。参考 [AirBeep](https://github.com/LinkPass888/AirBeep) 的配对顺序，独立实现了本机 RPPairing 宿主；调用的原生 API 来自 MIT 许可的 [AirCard-iOS/AirliftFFI](https://github.com/Mak5er/AirCard-iOS)。AirBeep 主项目是 GPL-3.0，本工程没有复制其 Swift 文件。
 
@@ -37,7 +37,13 @@ AirCard 的 Rust 依赖还包含 AFC / HouseArrest 的 `ReadDir`、`RemovePath` 
 
 已收到 iOS 27.0.1 真机结果：`Library/Caches` 与 `tmp` 均 `errno=1`，所以 v0.5.1 的本地 3105 POSIX 清理路线在该设备签名模式下不可用。v0.6 在用户界面移除这两个失败入口，新增完全不同的远程验证：RPPairing → RSD（49152）→ HouseArrest → VendContainer → AFC ListDirectory。只列根目录数量、不返回文件名、不读取文件、不触发删除。如果 HouseArrest 拒绝 App Store 容器，则不能把这条路线冒充成功；须继续研究 AirTraffic 权限本身是否允许受控目录操作。
 
-当前版本的远程探测尚未获得用户真机回报，因此不声称已经支持跨 App 实际删除。
+该版的 HouseArrest 探测已在用户真机返回拒绝，因此不能作为跨 App 清理后端。
+
+## 0.7 同一路径直接测试 AirLift 漏洞
+
+v0.6 真机反馈：`VendContainer` 返回 `InstallationLookupFailed`。这是 HouseArrest 独立服务的拒绝，不代表 AirTraffic 漏洞对已知 App 路径的读写失败。重新核对 3105 的 `LimitedCleanerService`，它精确清理每个 App 数据容器中的 `Library/Caches` 和 `tmp`。v0.7 直接对容器查询返回的路径追加以上两个白名单相对目录，调用 AirLift 的 `al_exploit_run`：创建随机文件、通过 AirTraffic 写入目标目录、移回 Media 读回、尝试完成清理和恢复 Books 状态。UI 会单独确认此项可能留下残留文件的设备改动。
+
+成功只能证明“创建并操作一个已知的测试文件”，不能证明“列出未知缓存文件名并精确删除”。对用户原有缓存、数据库或 Documents 不运行此测试。执行中断若有临时残留，必须先处理恢复问题后再进行其他验证。
 
 ## 0.5 参考 3105 的受控删除
 

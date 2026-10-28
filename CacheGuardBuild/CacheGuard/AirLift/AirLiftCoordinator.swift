@@ -14,6 +14,7 @@ final class AirLiftCoordinator: ObservableObject {
     @Published private(set) var scanningForeignCache = false
     @Published private(set) var deletingForeignCache = false
     @Published private(set) var checkingRemoteAfc = false
+    @Published private(set) var checkingAirTrafficCache = false
     @Published private(set) var pin: String?
     @Published private(set) var stage = "等待配对"
     @Published private(set) var diagnostic = "尚未验证设备服务连接"
@@ -21,6 +22,7 @@ final class AirLiftCoordinator: ObservableObject {
     @Published private(set) var cacheTraversalDiagnostic = "尚未检测其他 App 的缓存目录权限"
     @Published private(set) var foreignCacheDiagnostic = "尚未扫描目标 App 的缓存"
     @Published private(set) var remoteAfcDiagnostic = "尚未检查 HouseArrest 远程 AFC 的容器访问权限"
+    @Published private(set) var airTrafficCacheDiagnostic = "尚未使用 AirTraffic 漏洞测试目标 App 缓存目录"
     @Published private(set) var foreignCacheScan: ForeignCacheCleaner.Snapshot?
     @Published private(set) var hasRecord = PairingRecordStore.activePath != nil
     @Published private(set) var inspectedContainerPath: String?
@@ -43,7 +45,7 @@ final class AirLiftCoordinator: ObservableObject {
 
     func importPairingFile(_ url: URL) {
         guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
-              !scanningForeignCache, !deletingForeignCache else { return }
+              !scanningForeignCache, !deletingForeignCache, !checkingAirTrafficCache else { return }
         inspectedContainerPath = nil
         inspectedBundleIdentifier = nil
         foreignCacheScan = nil
@@ -59,7 +61,7 @@ final class AirLiftCoordinator: ObservableObject {
 
     func forgetPairing() {
         guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
-              !scanningForeignCache, !deletingForeignCache else { return }
+              !scanningForeignCache, !deletingForeignCache, !checkingAirTrafficCache else { return }
         inspectedContainerPath = nil
         inspectedBundleIdentifier = nil
         foreignCacheScan = nil
@@ -75,7 +77,7 @@ final class AirLiftCoordinator: ObservableObject {
 
     func startOnDevicePairing() {
         guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
-              !scanningForeignCache, !deletingForeignCache else { return }
+              !scanningForeignCache, !deletingForeignCache, !checkingAirTrafficCache else { return }
         guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 else {
             stage = "系统设置内配对要求 iOS 27 或更高版本；可导入电脑生成的配对文件。"
             return
@@ -184,12 +186,14 @@ final class AirLiftCoordinator: ObservableObject {
     func inspectContainer(bundleID: String) {
         guard !checkingContainer, !checkingCanary, !checkingCacheTraversal,
               !scanningForeignCache, !deletingForeignCache, !checkingRemoteAfc,
+              !checkingAirTrafficCache,
               !pairing else { return }
         inspectedContainerPath = nil
         inspectedBundleIdentifier = nil
         foreignCacheScan = nil
         foreignCacheDiagnostic = "尚未扫描目标 App 的缓存"
         remoteAfcDiagnostic = "尚未检查 HouseArrest 远程 AFC 的容器访问权限"
+        airTrafficCacheDiagnostic = "尚未使用 AirTraffic 漏洞测试目标 App 缓存目录"
         cacheTraversalDiagnostic = "尚未检测其他 App 的缓存目录权限"
         guard let record = PairingRecordStore.activePath else {
             diagnostic = "请先完成配对或导入配对文件。"
@@ -240,7 +244,7 @@ final class AirLiftCoordinator: ObservableObject {
     /// not third-party cache or directory access.
     func checkReadTransportWithOwnCanary() {
         guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
-              !scanningForeignCache, !deletingForeignCache else { return }
+              !scanningForeignCache, !deletingForeignCache, !checkingAirTrafficCache else { return }
         guard let pairingPath = PairingRecordStore.activePath else {
             canaryDiagnostic = "请先完成配对。"
             return
@@ -296,7 +300,7 @@ final class AirLiftCoordinator: ObservableObject {
     /// active process sandbox. No deletion, writes or file content reads.
     func inspectCacheDirectoryAccess() {
         guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
-              !scanningForeignCache, !deletingForeignCache,
+              !scanningForeignCache, !deletingForeignCache, !checkingAirTrafficCache,
               let container = inspectedContainerPath,
               CacheTraversalProbe.validateAppRoot(container) else {
             cacheTraversalDiagnostic = "先成功查询目标 App 的数据容器。"
@@ -324,7 +328,7 @@ final class AirLiftCoordinator: ObservableObject {
     /// the earlier fast probe fails so the user gets a concrete access error.
     func previewForeignCache() {
         guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
-              !scanningForeignCache, !deletingForeignCache,
+              !scanningForeignCache, !deletingForeignCache, !checkingAirTrafficCache,
               let container = inspectedContainerPath,
               CacheTraversalProbe.validateAppRoot(container) else {
             foreignCacheDiagnostic = "先通过设备服务查询目标 App 的真实容器。"
@@ -350,7 +354,7 @@ final class AirLiftCoordinator: ObservableObject {
     /// Called only from the user-visible destructive confirmation dialog.
     func deletePreviewedForeignCache() {
         guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
-              !scanningForeignCache, !deletingForeignCache,
+              !scanningForeignCache, !deletingForeignCache, !checkingAirTrafficCache,
               let snapshot = foreignCacheScan,
               let container = inspectedContainerPath,
               snapshot.container == container,
@@ -372,6 +376,7 @@ final class AirLiftCoordinator: ObservableObject {
     func inspectRemoteAfcContainer() {
         guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
               !scanningForeignCache, !deletingForeignCache, !checkingRemoteAfc,
+              !checkingAirTrafficCache,
               let bundleID = inspectedBundleIdentifier,
               let record = PairingRecordStore.activePath else {
             remoteAfcDiagnostic = "先通过设备服务查询目标 App 的容器路径。"
@@ -407,6 +412,66 @@ final class AirLiftCoordinator: ObservableObject {
                     + (code == 0
                        ? "\n至少一个远程目录可列举。后续还必须单独验证写权限与精确删除行为；本次未删除。"
                        : "\n这条服务路线当前未获得目标缓存目录权限；不会退回已失败的直接 POSIX 删除。")
+            }
+        }
+    }
+
+    /// The actual AirTraffic/ATAirlock exploit canary, aimed at the *same*
+    /// disposable cache roots used by 3105. Unlike the earlier POSIX and
+    /// HouseArrest checks, this runs al_exploit_run against the remote absolute
+    /// directory. It creates a fresh random marker, moves it back through
+    /// AirTraffic, verifies its bytes, and attempts cleanup. The user must
+    /// approve this state-changing test in the UI.
+    func testAirTrafficCacheRoot(_ relativeDirectory: String) {
+        guard !pairing, !checkingContainer, !checkingCanary, !checkingCacheTraversal,
+              !scanningForeignCache, !deletingForeignCache, !checkingRemoteAfc,
+              !checkingAirTrafficCache,
+              CacheTraversalProbe.eligibleDirectories.contains(relativeDirectory),
+              let container = inspectedContainerPath,
+              CacheTraversalProbe.validateAppRoot(container),
+              let pairingPath = PairingRecordStore.activePath else {
+            airTrafficCacheDiagnostic = "请先完成配对、查询目标 App 容器，并选择允许的缓存目录。"
+            return
+        }
+        guard AirLiftNetwork.configureTarget() else {
+            airTrafficCacheDiagnostic = "请检查 LocalDevVPN 的目标地址。"
+            return
+        }
+        let target = container + "/" + relativeDirectory
+        checkingAirTrafficCache = true
+        airTrafficCacheDiagnostic = "正在使用 AirTraffic 漏洞测试 \(relativeDirectory)：写入随机文件、读回并核对清理状态。请勿切断 VPN 或退出 App。"
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            var outputJSON: UnsafeMutablePointer<CChar>?
+            var outputError: UnsafeMutablePointer<CChar>?
+            let code = pairingPath.withCString { pairingC in
+                target.withCString { targetC in
+                    al_exploit_run(pairingC, targetC, nil, nil, &outputJSON, &outputError)
+                }
+            }
+            let returned = outputJSON.map { String(cString: $0) } ?? ""
+            let error = outputError.map { String(cString: $0) } ?? ""
+            if let outputJSON { al_string_free(outputJSON) }
+            if let outputError { al_string_free(outputError) }
+
+            let object = (try? JSONSerialization.jsonObject(with: Data(returned.utf8))) as? [String: Any]
+            let writeBack = object?["exactBytesRecovered"] as? Bool
+            let clean = object?["cleanupComplete"] as? Bool
+            let confirmed = code == 0 && writeBack == true && clean == true
+            let description: String
+            if let writeBack, let clean {
+                description = "路径：\(target)\n读回校验：\(writeBack ? "成功" : "失败")；临时文件清理：\(clean ? "完成" : "未确认")；错误码：\(code)。"
+            } else {
+                description = "路径：\(target)\n原生测试没有返回完整的读回和清理校验；错误码：\(code)。"
+            }
+            let suffix = confirmed
+                ? "\nAirTraffic 可在该缓存目录操作受控测试文件；仍未证明能列出并删除其中原有的所有文件。"
+                : "\n尚未证实可安全读写该目录。若清理状态未确认，请勿重复执行，先检查运行结果。"
+            DispatchQueue.main.async {
+                self.checkingAirTrafficCache = false
+                self.airTrafficCacheDiagnostic = description + suffix
+                    + (error.isEmpty ? "" : "\n设备错误：\(String(error.prefix(450)))")
+                    + (returned.isEmpty ? "" : "\n原生结果：\(String(returned.prefix(1200)))")
             }
         }
     }
