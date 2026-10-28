@@ -147,7 +147,7 @@ struct AirLiftSetupView: View {
             }
 
             Section("第六步 · 3105 式缓存预览与确认清理") {
-                Text("只在刚才查询的目标 App 容器内处理 Library/Caches 和 tmp 中的普通文件。扫描不读取文件内容；删除前须单独确认，且会重新核验每个文件，跳过符号链接、变化的文件和无权限的目录。不会触碰 Documents 或聊天数据库。")
+                Text("只在刚才查询的目标 App 容器内处理 Library/Caches 和 tmp 中的普通文件。扫描不读取文件内容；删除前须单独确认，且会重新核验每个文件，跳过符号链接、常见数据库/凭据类文件、变化的文件和无权限的目录。不会遍历 Documents。")
                     .font(.footnote)
                 Button {
                     bridge.previewForeignCache()

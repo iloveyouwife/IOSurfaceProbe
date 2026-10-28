@@ -101,6 +101,12 @@ enum ForeignCacheCleaner {
             if intermediate {
                 failures += 1
             } else if let name = candidate.components.last {
+                if isProtectedFile(name) {
+                    skipped += 1
+                    if parentFD != scopeFD { close(parentFD) }
+                    close(scopeFD)
+                    continue
+                }
                 var current = stat()
                 let checked = name.withCString { fstatat(parentFD, $0, &current, AT_SYMLINK_NOFOLLOW) }
                 let unchanged = checked == 0 && isRegularFile(current)
@@ -161,6 +167,20 @@ enum ForeignCacheCleaner {
         (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
     }
 
+    /// Cache folders may also contain SQLite databases or WebKit/LevelDB
+    /// session stores. Exclude these rather than assuming that every regular
+    /// file in a directory named Caches is disposable.
+    static func isProtectedFile(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        let suffixes = [".db", ".db-wal", ".db-shm", ".db-journal", ".sqlite", ".sqlite3",
+                        ".sqlite-wal", ".sqlite-shm", ".sqlite3-wal", ".sqlite3-shm",
+                        ".realm", ".realm.lock",
+                        ".plist", ".ldb", ".sst", ".keychain", ".pem", ".p12"]
+        return suffixes.contains(where: { lower.hasSuffix($0) })
+            || lower == "current" || lower == "lock"
+            || lower.hasPrefix("manifest-")
+    }
+
     private static func collect(
         in descriptor: Int32, scope: String, components: [String],
         depth: Int, into collector: inout Collector
@@ -198,6 +218,7 @@ enum ForeignCacheCleaner {
                 continue
             }
             if isRegularFile(info) {
+                if isProtectedFile(name) { continue }
                 let size = max(Int64(info.st_size), 0)
                 collector.files.append(Candidate(
                     scope: scope, components: components + [name], bytes: size,

@@ -21,4 +21,13 @@ final class ForeignCacheCleanerTests: XCTestCase {
         )
         XCTAssertEqual(ForeignCacheCleaner.delete(example).removed, 0)
     }
+
+    func testProtectsDatabasesAndCredentialLikeFilesEvenWithinCacheRoots() {
+        for file in ["Chat.sqlite", "Chat.sqlite-wal", "History.db", "Cache.realm",
+                     "Settings.plist", "MANIFEST-000001", "LOCK", "000023.ldb",
+                     "passwords.keychain"] {
+            XCTAssertTrue(ForeignCacheCleaner.isProtectedFile(file), file)
+        }
+        XCTAssertFalse(ForeignCacheCleaner.isProtectedFile("temporary-image.jpg"))
+    }
 }

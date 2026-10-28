@@ -1,4 +1,4 @@
-# CacheGuard 0.5：AirLift / AirBeep 配对与缓存清理
+# CacheGuard 0.5.1：AirLift / AirBeep 配对与缓存清理
 
 本工程以 **iOS 27.0.1 真机**为目标。参考 [AirBeep](https://github.com/LinkPass888/AirBeep) 的配对顺序，独立实现了本机 RPPairing 宿主；调用的原生 API 来自 MIT 许可的 [AirCard-iOS/AirliftFFI](https://github.com/Mak5er/AirCard-iOS)。AirBeep 主项目是 GPL-3.0，本工程没有复制其 Swift 文件。
 
@@ -35,7 +35,7 @@ AirCard 的 Rust 依赖还包含 AFC / HouseArrest 的 `ReadDir`、`RemovePath` 
 
 ## 0.5 参考 3105 的受控删除
 
-在已成功查询目标 App 容器后，点第六步「预览可清理文件与大小」，应用尝试打开 `Library/Caches` 和 `tmp`，只记录普通文件的大小、inode 与修改时间（不读取文件内容）。仅预览成功且有文件时显示删除按钮，需要用户明确二次确认。删除前重新校验身份与修改时间，沿目录 fd 使用 `openat` + `O_NOFOLLOW` 以及 `unlinkat`，不会递归删除整个目录或跟随符号链接。失败或不可访问的路径报告出来，绝不改动 `Documents`、聊天数据库路径和系统配置。
+在已成功查询目标 App 容器后，点第六步「预览可清理文件与大小」，应用尝试打开 `Library/Caches` 和 `tmp`，只记录普通文件的大小、inode 与修改时间（不读取文件内容）。仅预览成功且有文件时显示删除按钮，需要用户明确二次确认。删除前重新校验身份与修改时间，沿目录 fd 使用 `openat` + `O_NOFOLLOW` 以及 `unlinkat`，不会递归删除整个目录或跟随符号链接；数据库、plist 和凭据类扩展名被排除。失败或不可访问的路径报告出来，绝不改动 `Documents` 和系统配置。
 
 这是一种**有权限才执行**的本地 POSIX 实现，和 3105 使用的受限沙盒授权途径并不相同。若出现 errno=1/13 或可访问根目录 0/2，即说明该侧载签名下不能直接清理目标 App，需继续研究已授权的远程服务接口。不能把“读本 App 测试文件成功”当成此功能成功。
 
