@@ -41,7 +41,7 @@ struct AirLiftSetupView: View {
                     if bridge.pairing { ProgressView().padding(.trailing, 5) }
                     Text(bridge.pairing ? "等待系统设置确认…" : "启动本机配对")
                 }
-                .disabled(bridge.pairing || bridge.checkingContainer)
+                .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary)
                 Text("原生配对接口暂不支持安全取消；若长时间无响应，请关闭并重开 App。后台静音音频仅在等待配对时启用。")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -51,10 +51,10 @@ struct AirLiftSetupView: View {
                 Text("如果设置里没有配对入口，可从电脑、SideStore、LiveContainer 等导出配对文件，然后在本机导入。")
                     .font(.footnote)
                 Button("从文件 App 导入配对记录") { importing = true }
-                    .disabled(bridge.pairing || bridge.checkingContainer)
+                    .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary)
                 if bridge.hasRecord {
                     Button("忘记本地配对记录", role: .destructive) { forgetConfirmation = true }
-                        .disabled(bridge.pairing || bridge.checkingContainer)
+                        .disabled(bridge.pairing || bridge.checkingContainer || bridge.checkingCanary)
                 }
                 Text("配对记录包含设备信任凭据，仅保存在 App 私有目录、排除系统备份；请勿发送到聊天、网盘或公开仓库。")
                     .font(.caption)
@@ -93,8 +93,23 @@ struct AirLiftSetupView: View {
                     if bridge.checkingContainer { ProgressView().padding(.trailing, 5) }
                     Text(bridge.checkingContainer ? "正在查询设备服务…" : "验证 App 容器查询")
                 }
-                .disabled(!bridge.hasRecord || bridge.pairing || bridge.checkingContainer)
+                .disabled(!bridge.hasRecord || bridge.pairing || bridge.checkingContainer || bridge.checkingCanary)
                 Text(bridge.diagnostic)
+                    .font(.footnote)
+                    .textSelection(.enabled)
+            }
+
+            Section("第四步 · 安全读取通道测试") {
+                Text("清存会在自己的临时目录创建一个随机测试文件，通过 AirLift 读取并比对，随后删除该测试文件。不会访问微信的配置、聊天或缓存内容。")
+                    .font(.footnote)
+                Button {
+                    bridge.checkReadTransportWithOwnCanary()
+                } label: {
+                    if bridge.checkingCanary { ProgressView().padding(.trailing, 5) }
+                    Text(bridge.checkingCanary ? "正在核对测试文件…" : "测试 AirLift 单文件读取")
+                }
+                .disabled(!bridge.hasRecord || bridge.pairing || bridge.checkingContainer || bridge.checkingCanary)
+                Text(bridge.canaryDiagnostic)
                     .font(.footnote)
                     .textSelection(.enabled)
             }

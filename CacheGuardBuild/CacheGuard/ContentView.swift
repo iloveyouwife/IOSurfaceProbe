@@ -30,7 +30,7 @@ struct ContentView: View {
             .navigationTitle("清存")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Text("v0.2")
+                    Text("v0.3")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }

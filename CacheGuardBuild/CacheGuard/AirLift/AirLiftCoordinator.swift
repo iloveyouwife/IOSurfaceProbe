@@ -9,9 +9,11 @@ final class AirLiftCoordinator: ObservableObject {
 
     @Published private(set) var pairing = false
     @Published private(set) var checkingContainer = false
+    @Published private(set) var checkingCanary = false
     @Published private(set) var pin: String?
     @Published private(set) var stage = "等待配对"
     @Published private(set) var diagnostic = "尚未验证设备服务连接"
+    @Published private(set) var canaryDiagnostic = "尚未验证 AirLift 单文件读取通道"
     @Published private(set) var hasRecord = PairingRecordStore.activePath != nil
 
     private let audio = PairingBackgroundAudio()
@@ -25,7 +27,7 @@ final class AirLiftCoordinator: ObservableObject {
     }
 
     func importPairingFile(_ url: URL) {
-        guard !pairing, !checkingContainer else { return }
+        guard !pairing, !checkingContainer, !checkingCanary else { return }
         do {
             _ = try PairingRecordStore.importRecord(from: url)
             stage = "配对文件已导入；尚未验证跨沙盒权限"
@@ -37,7 +39,7 @@ final class AirLiftCoordinator: ObservableObject {
     }
 
     func forgetPairing() {
-        guard !pairing, !checkingContainer else { return }
+        guard !pairing, !checkingContainer, !checkingCanary else { return }
         do {
             try PairingRecordStore.remove()
             stage = "本地配对记录已移除"
@@ -49,7 +51,7 @@ final class AirLiftCoordinator: ObservableObject {
     }
 
     func startOnDevicePairing() {
-        guard !pairing else { return }
+        guard !pairing, !checkingContainer, !checkingCanary else { return }
         guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 else {
             stage = "系统设置内配对要求 iOS 27 或更高版本；可导入电脑生成的配对文件。"
             return
@@ -156,7 +158,7 @@ final class AirLiftCoordinator: ObservableObject {
     }
 
     func inspectContainer(bundleID: String) {
-        guard !checkingContainer, !pairing else { return }
+        guard !checkingContainer, !checkingCanary, !pairing else { return }
         guard let record = PairingRecordStore.activePath else {
             diagnostic = "请先完成配对或导入配对文件。"
             return
@@ -195,6 +197,62 @@ final class AirLiftCoordinator: ObservableObject {
                 } else {
                     self.diagnostic = "容器查询未成功：\(message)。请检查 VPN 地址、配对记录以及 App 是否已安装。"
                 }
+            }
+        }
+    }
+
+    /// Probe only a random, self-owned temporary file. No third-party app data
+    /// is opened and no system file is modified. Result verifies transport,
+    /// not third-party cache or directory access.
+    func checkReadTransportWithOwnCanary() {
+        guard !pairing, !checkingContainer, !checkingCanary else { return }
+        guard let pairingPath = PairingRecordStore.activePath else {
+            canaryDiagnostic = "请先完成配对。"
+            return
+        }
+        guard AirLiftNetwork.configureTarget() else {
+            canaryDiagnostic = "请设置有效的 LocalDevVPN 地址。"
+            return
+        }
+
+        let probeFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cacheguard-airlift-\(UUID().uuidString).txt")
+        let marker = Data("CacheGuard controlled read probe \(UUID().uuidString)".utf8)
+        do {
+            try marker.write(to: probeFile, options: [.atomic])
+        } catch {
+            canaryDiagnostic = "无法准备测试文件：\(error.localizedDescription)"
+            return
+        }
+
+        checkingCanary = true
+        canaryDiagnostic = "正在通过 AirLift 读取清存自己创建的临时测试文件…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { try? FileManager.default.removeItem(at: probeFile) }
+            var outData: UnsafeMutablePointer<UInt8>?
+            var outLength: Int = 0
+            var outError: UnsafeMutablePointer<CChar>?
+
+            let rc = pairingPath.withCString { pairingC in
+                probeFile.path.withCString { fileC in
+                    al_exploit_read_file(pairingC, fileC, nil, nil, &outData, &outLength, &outError)
+                }
+            }
+            let verified: Bool
+            if rc == 0, let outData, outLength == marker.count {
+                verified = Data(bytes: outData, count: outLength) == marker
+            } else {
+                verified = false
+            }
+            let errorText = outError.map { String(cString: $0) } ?? "未返回错误信息"
+            if let outData { al_bytes_free(outData, outLength) }
+            if let outError { al_string_free(outError) }
+
+            DispatchQueue.main.async {
+                self.checkingCanary = false
+                self.canaryDiagnostic = verified
+                    ? "测试通过：AirLift 返回的内容与本 App 临时文件完全一致（\(marker.count) 字节）。不代表微信缓存已可读或可删除。"
+                    : "测试未通过：\(String(errorText.prefix(250)))。请检查配对文件与 VPN；这不等于跨 App 访问一定失败。"
             }
         }
     }

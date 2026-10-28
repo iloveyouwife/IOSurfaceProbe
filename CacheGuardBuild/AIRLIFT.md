@@ -21,6 +21,10 @@
 
 原生 `al_pairing_run_host` 在配对完成之前是阻塞调用且没有安全取消 API。切到设置时 App 仅在主动配对期间尝试无声音频后台保活；如果长时间卡住，请退出 App 并重试。
 
+## 0.3 安全读取通道诊断
+
+在成功查询微信等 App 容器之后，可继续点击「测试 AirLift 单文件读取」。此操作只测试 **CacheGuard 自己创建的临时标记文件**：创建随机文件、通过 FFI 读取、逐字节核对、删除标记。它可以验证读取通道，但不能证明可以读取或删除微信缓存。未经额外授权，不应为了测试而打开其他 App 可能包含账号凭据的偏好文件。
+
 ## 现在具备的 FFI 能力
 
 | 接口 | 功能 | 0.2 状态 |
@@ -28,7 +32,7 @@
 | `al_pairing_run_host` | RPPairing 配对、PIN 回调 | 已接入，待真机验证 |
 | `al_set_target_host` | 本地设备 IP 配置 | 已接入 |
 | `al_find_app_container` | 按 Bundle ID 只读查询容器路径 | 已接入，待真机验证 |
-| `al_exploit_read_file` | 读取给定绝对路径的文件 | 当前未调用 |
+| `al_exploit_read_file` | 读取给定绝对路径的文件 | 只用于本 App 临时标记文件，待真机验证 |
 | `al_exploit_write_dir` | 向给定目录写入/覆盖内容 | 当前未调用 |
 | `al_exploit_inject_folder` | 注入目录树 | 当前未调用 |
 
