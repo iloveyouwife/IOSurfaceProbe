@@ -10,6 +10,8 @@ typedef uint32_t (*GetServiceFn)(mach_port_t, CFDictionaryRef);
 typedef kern_return_t (*OpenFn)(uint32_t, task_t, uint32_t, uint32_t *);
 typedef kern_return_t (*CloseFn)(uint32_t);
 typedef kern_return_t (*ReleaseFn)(uint32_t);
+typedef kern_return_t (*GetClassFn)(uint32_t, char *);
+typedef kern_return_t (*RegistryIDFn)(uint32_t, uint64_t *);
 
 static NSString *RunProbe(void) {
     NSMutableString *out = [NSMutableString stringWithFormat:
@@ -26,6 +28,8 @@ static NSString *RunProbe(void) {
     OpenFn openService = (OpenFn)dlsym(lib, "IOServiceOpen");
     CloseFn closeService = (CloseFn)dlsym(lib, "IOServiceClose");
     ReleaseFn release = (ReleaseFn)dlsym(lib, "IOObjectRelease");
+    GetClassFn getClass = (GetClassFn)dlsym(lib, "IOObjectGetClass");
+    RegistryIDFn getRegistryID = (RegistryIDFn)dlsym(lib, "IORegistryEntryGetRegistryEntryID");
     if (!matchClass || !matchName || !getService || !openService || !closeService || !release) {
         [out appendString:@"Required IOKit symbol unavailable.\n"];
         dlclose(lib);
@@ -45,6 +49,19 @@ static NSString *RunProbe(void) {
         if (service == MACH_PORT_NULL) {
             [out appendString:@"   Service not visible (may be absent or sandbox denied).\n\n"];
             continue;
+        }
+        if (getClass) {
+            char className[128] = {0};
+            kern_return_t classKR = getClass(service, className);
+            [out appendFormat:@"   IOObjectGetClass: %@ (0x%08x)\n",
+                classKR == KERN_SUCCESS ? [NSString stringWithUTF8String:className] : @"unavailable",
+                (unsigned)classKR];
+        }
+        if (getRegistryID) {
+            uint64_t entryID = 0;
+            kern_return_t idKR = getRegistryID(service, &entryID);
+            [out appendFormat:@"   IORegistryEntryID: 0x%016llx (status 0x%08x)\n",
+                (unsigned long long)entryID, (unsigned)idKR];
         }
         uint32_t connection = MACH_PORT_NULL;
         kern_return_t kr = openService(service, mach_task_self(), 0, &connection);
