@@ -4,7 +4,7 @@
 #import <dlfcn.h>
 #include <stdint.h>
 
-// Non-exploit IOSurface reachability probe: no IOConnectCallMethod or payloads.
+// Read-only IOSurface reachability probe: no IOConnectCallMethod or payloads.
 typedef CFMutableDictionaryRef (*MatchingFn)(const char *);
 typedef uint32_t (*GetServiceFn)(mach_port_t, CFDictionaryRef);
 typedef kern_return_t (*OpenFn)(uint32_t, task_t, uint32_t, uint32_t *);
@@ -12,12 +12,63 @@ typedef kern_return_t (*CloseFn)(uint32_t);
 typedef kern_return_t (*ReleaseFn)(uint32_t);
 typedef kern_return_t (*GetClassFn)(uint32_t, char *);
 typedef kern_return_t (*RegistryIDFn)(uint32_t, uint64_t *);
-typedef kern_return_t (*ConnectServiceFn)(uint32_t, uint32_t *);
+typedef kern_return_t (*ConnectGetServiceFn)(uint32_t, uint32_t *);
+typedef CFTypeRef (*TaskFromSelfFn)(CFAllocatorRef);
+typedef CFTypeRef (*TaskEntitlementFn)(CFTypeRef, CFStringRef, CFErrorRef *);
+
+static void AppendOwnEntitlements(NSMutableString *out) {
+    // Query only this application's *effective* code-signing entitlements.
+    void *lib = dlopen("/System/Library/Frameworks/Security.framework/Security",
+                      RTLD_NOW | RTLD_LOCAL);
+    if (!lib) {
+        [out appendString:@"Code-signing entitlement inspection: Security framework unavailable.\n\n"];
+        return;
+    }
+    TaskFromSelfFn fromSelf = (TaskFromSelfFn)dlsym(lib, "SecTaskCreateFromSelf");
+    TaskEntitlementFn getEnt = (TaskEntitlementFn)dlsym(lib, "SecTaskCopyValueForEntitlement");
+    if (!fromSelf || !getEnt) {
+        [out appendString:@"Code-signing entitlement inspection: API unavailable.\n\n"];
+        dlclose(lib);
+        return;
+    }
+    CFTypeRef task = fromSelf(kCFAllocatorDefault);
+    if (!task) {
+        [out appendString:@"Code-signing entitlement inspection: self task unavailable.\n\n"];
+        dlclose(lib);
+        return;
+    }
+    NSArray<NSString *> *names = @[
+        @"com.apple.private.gpu-restricted",
+        @"com.apple.developer.gpu-restricted",
+        @"com.apple.private.iosurfaceinfo",
+        @"com.apple.private.IOSurface.protected-access"
+    ];
+    [out appendString:@"Own effective code-signing entitlements:\n"];
+    for (NSString *name in names) {
+        CFErrorRef error = NULL;
+        CFTypeRef value = getEnt(task, (__bridge CFStringRef)name, &error);
+        NSString *description = @"absent / not accessible";
+        if (value) {
+            if (CFGetTypeID(value) == CFBooleanGetTypeID()) {
+                description = CFBooleanGetValue((CFBooleanRef)value) ? @"TRUE" : @"FALSE";
+            } else {
+                description = @"present (non-Boolean)";
+            }
+        }
+        [out appendFormat:@"  %@: %@\n", name, description];
+        if (value) CFRelease(value);
+        if (error) CFRelease(error);
+    }
+    CFRelease(task);
+    dlclose(lib);
+    [out appendString:@"\n"];
+}
 
 static NSString *RunProbe(void) {
     NSMutableString *out = [NSMutableString stringWithFormat:
-        @"iOS: %@\nSigned-app IOSurface service-open diagnostic\nNo external method calls.\n\n",
+        @"iOS: %@\nSigned-app IOSurface v1.3 read-only diagnostic\nNo external method calls.\n\n",
         NSProcessInfo.processInfo.operatingSystemVersionString];
+    AppendOwnEntitlements(out);
     void *lib = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW | RTLD_LOCAL);
     if (!lib) {
         [out appendFormat:@"IOKit unavailable: %s\n", dlerror() ?: "unknown"];
@@ -31,7 +82,7 @@ static NSString *RunProbe(void) {
     ReleaseFn release = (ReleaseFn)dlsym(lib, "IOObjectRelease");
     GetClassFn getClass = (GetClassFn)dlsym(lib, "IOObjectGetClass");
     RegistryIDFn getRegistryID = (RegistryIDFn)dlsym(lib, "IORegistryEntryGetRegistryEntryID");
-    ConnectServiceFn getConnectService = (ConnectServiceFn)dlsym(lib, "IOConnectGetService");
+    ConnectGetServiceFn connectGetService = (ConnectGetServiceFn)dlsym(lib, "IOConnectGetService");
     if (!matchClass || !matchName || !getService || !openService || !closeService || !release) {
         [out appendString:@"Required IOKit symbol unavailable.\n"];
         dlclose(lib);
@@ -64,7 +115,10 @@ static NSString *RunProbe(void) {
         if (getRegistryID) {
             uint64_t entryID = 0;
             kern_return_t idKR = getRegistryID(service, &entryID);
-            if (idKR == KERN_SUCCESS) { originalEntryID = entryID; originalEntryIDValid = YES; }
+            if (idKR == KERN_SUCCESS) {
+                originalEntryID = entryID;
+                originalEntryIDValid = YES;
+            }
             [out appendFormat:@"   IORegistryEntryID: 0x%016llx (status 0x%08x)\n",
                 (unsigned long long)entryID, (unsigned)idKR];
         }
@@ -74,40 +128,38 @@ static NSString *RunProbe(void) {
             (unsigned)kr, (int)kr];
         if (kr == KERN_SUCCESS && connection != MACH_PORT_NULL) {
             [out appendString:@"   OPEN ALLOWED for this app.\n"];
-            // Read-only connection identity: never dispatch an external method.
             if (getClass) {
-                char connectionClass[128] = {0};
-                kern_return_t classKR = getClass(connection, connectionClass);
+                char clientClass[128] = {0};
+                kern_return_t clientKR = getClass(connection, clientClass);
                 [out appendFormat:@"   Connection class: %@ (0x%08x)\n",
-                    classKR == KERN_SUCCESS ? [NSString stringWithUTF8String:connectionClass] : @"unavailable",
-                    (unsigned)classKR];
+                    clientKR == KERN_SUCCESS ? [NSString stringWithUTF8String:clientClass] : @"unavailable",
+                    (unsigned)clientKR];
             }
-            if (getConnectService) {
-                uint32_t connectedService = MACH_PORT_NULL;
-                kern_return_t connectionKR = getConnectService(connection, &connectedService);
-                [out appendFormat:@"   IOConnectGetService: 0x%08x\n", (unsigned)connectionKR];
-                if (connectionKR == KERN_SUCCESS && connectedService != MACH_PORT_NULL) {
+            if (connectGetService) {
+                uint32_t ownerService = MACH_PORT_NULL;
+                kern_return_t serviceKR = connectGetService(connection, &ownerService);
+                [out appendFormat:@"   IOConnectGetService: 0x%08x\n", (unsigned)serviceKR];
+                if (serviceKR == KERN_SUCCESS && ownerService != MACH_PORT_NULL) {
                     if (getClass) {
-                        char associatedClass[128] = {0};
-                        kern_return_t classKR = getClass(connectedService, associatedClass);
+                        char ownerClass[128] = {0};
+                        kern_return_t classKR = getClass(ownerService, ownerClass);
                         [out appendFormat:@"   Connected service class: %@ (0x%08x)\n",
-                            classKR == KERN_SUCCESS ? [NSString stringWithUTF8String:associatedClass] : @"unavailable",
+                            classKR == KERN_SUCCESS ? [NSString stringWithUTF8String:ownerClass] : @"unavailable",
                             (unsigned)classKR];
                     }
-                    if (getRegistryID) {
-                        uint64_t associatedID = 0;
-                        kern_return_t idKR = getRegistryID(connectedService, &associatedID);
-                        [out appendFormat:@"   Connected service ID: 0x%016llx (0x%08x)\n",
-                            (unsigned long long)associatedID, (unsigned)idKR];
-                        if (idKR == KERN_SUCCESS && originalEntryIDValid) {
-                            [out appendFormat:@"   Connection service matches: %@\n",
-                                associatedID == originalEntryID ? @"YES" : @"NO"];
-                        }
+                    uint64_t ownerID = 0;
+                    kern_return_t ownerKR = getRegistryID
+                        ? getRegistryID(ownerService, &ownerID) : KERN_FAILURE;
+                    [out appendFormat:@"   Connection owner Registry ID: 0x%016llx (0x%08x)\n",
+                        (unsigned long long)ownerID, (unsigned)ownerKR];
+                    if (ownerKR == KERN_SUCCESS && originalEntryIDValid) {
+                        [out appendFormat:@"   Connection service matches: %@\n",
+                            ownerID == originalEntryID ? @"YES" : @"NO"];
                     }
-                    release(connectedService);
+                    release(ownerService);
                 }
             } else {
-                [out appendString:@"   IOConnectGetService unavailable on this OS.\n"];
+                [out appendString:@"   IOConnectGetService symbol unavailable.\n"];
             }
             kern_return_t closeKR = closeService(connection);
             [out appendFormat:@"   IOServiceClose: 0x%08x\n", (unsigned)closeKR];
@@ -117,7 +169,7 @@ static NSString *RunProbe(void) {
         release(service);
         [out appendString:@"\n"];
     }
-    [out appendString:@"Connection identity does not prove external-method dispatch or exploitation.\n"];
+    [out appendString:@"A successful open does not prove specific external methods or exploitation are available.\n"];
     dlclose(lib);
     return out;
 }
